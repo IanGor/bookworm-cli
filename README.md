@@ -7,6 +7,11 @@
 Расположите BookwormCLI и BookwormEngine рядом. Для сборки нужны Rust с Cargo (проверено на 1.99), системная библиотека OpenSSL libcrypto и каталог шрифтов движка. Cargo использует соседний пакет `../BookwormEngine/crates/core` с включённой возможностью `raster`.
 
 ```sh
+git clone https://github.com/IanGor/bookworm-engine BookwormEngine
+git clone https://github.com/IanGor/bookworm-cli BookwormCLI
+```
+
+```sh
 cargo build --release --locked
 ./target/release/bookworm
 ./target/release/bookworm "$HOME/Книги/Мастер и Маргарита.fb2"

@@ -1,0 +1,14 @@
+[package]
+name = "bookworm"
+version = "0.1.0"
+edition = "2024"
+description = "Локальная терминальная читалка FB2 и EPUB"
+
+[dependencies]
+bookworm-core = { path = "../BookwormEngine/crates/core", features = ["raster"] }
+anyhow = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+walkdir = "2"
+rustybuzz = "0.20"

@@ -20,7 +20,7 @@ import zlib
 
 EXE = sys.argv[1]
 APC = re.compile(rb'\x1b_G([^;\x1b]+);([A-Za-z0-9+/=]*)\x1b\\')
-FOOT = r'\?  Клавиши'
+FOOT = r'\[\?\] Клавиши'
 THEME_FOOT = r'Esc Отмена'
 ENGINE = Path(__file__).resolve().parents[2] / "BookwormEngine"
 
@@ -126,25 +126,58 @@ with tempfile.TemporaryDirectory() as tmp:
         s.until(rb'\x1b\]10;\?\x1b\\')
         s.send('\x1b]10;rgb:2222/6699/aaff\x1b\\')
         screen = s.until(FOOT)
+        assert '[←] [→] Листать'.encode() in screen
         before_theme = record(root)[1]['anchor']
+        s.send('S')
+        assert 'Бионическое чтение   Выкл.'.encode() in s.until('Esc Назад')
+        s.send('\r')
+        assert 'Бионическое чтение   Вкл.'.encode() in s.until('Esc Назад')
+        s.send('\x1b')
+        bionic = s.until(FOOT)
+        assert record(root)[0].get('bionic') is True
+        assert record(root)[1]['anchor'] == before_theme
+        assert [m[1] for m in APC.findall(bionic)] != [m[1] for m in APC.findall(screen)]
+        s.send('t')
+        toc_hint = 'Enter Перейти · Esc Назад'
+        assert toc_hint.encode() in s.until(FOOT)
+        s.send('g')
+        regular = s.until(FOOT)
+        assert record(root)[0].get('bionic') is False
+        assert record(root)[1]['anchor'] == before_theme
+        assert toc_hint.encode() in regular
+        assert [m[1] for m in APC.findall(regular)] == [m[1] for m in APC.findall(screen)]
+        s.send('\x1b')
+        assert toc_hint.encode() not in s.until(FOOT)
         s.send('Y')
         popup = s.until(THEME_FOOT)
-        assert 'Цветовые темы'.encode() in popup and b'One Dark Pro' in popup
+        for name in ('Цветовые темы', 'Как в терминале', 'Янтарь'):
+            assert name.encode() in popup
+        assert b'One Dark Pro' not in popup
+        assert 'Лампа'.encode() not in popup
         s.send('\x1b[B')
         s.until(THEME_FOOT)
         s.send('\x1b')
-        s.until(FOOT)
+        assert b'\x1b[2J' in s.until(FOOT), 'Canceling the theme picker must clear its text'
         assert record(root)[0].get('theme', 'terminal') == 'terminal'
         s.send('y')
         s.until(THEME_FOOT)
-        s.send('\x1b[F')
+        s.send('\x1b[B')
         s.until(THEME_FOOT)
         s.send('\r')
-        themed = s.until(FOOT)
-        assert b'48;2;250;250;250' in themed and b'38;2;' in themed
-        assert images(themed) == [(680, 500)] * 2
-        assert record(root)[0]['theme'] == 'atom-one-light'
+        amber = s.until(FOOT)
+        assert b'48;2;33;28;25' in amber and b'38;2;239;180;93' in amber
+        assert b'38;2;189;169;142' in amber
+        assert images(amber) == [(680, 500)] * 2
+        assert record(root)[0]['theme'] == 'amber'
         assert record(root)[1]['anchor'] == before_theme
+        s.send('y')
+        s.until(THEME_FOOT)
+        s.send('\r')
+        assert b'\x1b[2J' in s.until(FOOT), 'Reapplying the same theme must clear the picker'
+        s.send('?')
+        s.until('Esc Вернуться к чтению')
+        s.send('\x1b')
+        assert b'\x1b[2J' in s.until(FOOT), 'Closing help must clear its text'
         s.send('y')
         s.until(THEME_FOOT)
         s.send('\x1b[H')
@@ -233,7 +266,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert b'\x1b[?2026h' in note_scroll
         s.until(rb'\x1b\[\?2026l')
         s.send('\x1b')
-        s.until(FOOT)
+        assert b'\x1b[2J' in s.until(FOOT), 'Leaving a footnote must redraw the book screen'
         s.send('e')
         s.until(FOOT)
         assert record(root)[1]['completions'] == []
@@ -246,6 +279,15 @@ with tempfile.TemporaryDirectory() as tmp:
         assert len(images(turn)) == 2
         anchor = record(root)[1]['anchor']
         assert anchor['offset'] > 0, anchor
+        s.send('b')
+        s.until('Q Выход')
+        s.send('d')
+        s.until('Backspace Стереть')
+        s.send('~/Книги\r')
+        assert b'o~' in s.until('Q Выход')
+        s.send('\r')
+        s.until(FOOT)
+        assert record(root)[1]['anchor'] == anchor
         s.send('v')
         assert len(images(s.until(FOOT))) == 1
         assert record(root)[1]['anchor'] == anchor
@@ -294,14 +336,17 @@ with tempfile.TemporaryDirectory() as tmp:
         s.send('\x1b[B')
         s.until(THEME_FOOT)
         s.send('\r')
-        assert b'48;2;40;44;52' in s.until('Q Выход')
-        assert record(root)[0]['theme'] == 'one-dark-pro'
+        assert b'48;2;33;28;25' in s.until('Q Выход')
+        assert record(root)[0]['theme'] == 'amber'
         s.send('q')
         s.restored(0)
 
     with Session(root, path) as s:
         s.probe()
-        assert b'48;2;40;44;52' in s.until(FOOT)
+        assert b'48;2;33;28;25' in s.until(FOOT)
+        s.send('G')
+        before_restart = APC.findall(s.until(FOOT))
+        assert before_restart
         s.proc.send_signal(signal.SIGTERM)
         s.restored(0)
 
@@ -311,7 +356,9 @@ with tempfile.TemporaryDirectory() as tmp:
 
     with Session(root, path) as s:
         s.probe()
-        s.until(FOOT)
+        after_restart = APC.findall(s.until(FOOT))
+        assert record(root)[0]['bionic'] is True
+        assert [payload for _, payload in after_restart] == [payload for _, payload in before_restart]
         db = root / 'data/bookworm/library.toml'
         db.write_text('external = [')
         s.send('\x1b[D')

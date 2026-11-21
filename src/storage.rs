@@ -106,6 +106,8 @@ pub struct Database {
     pub font: String,
     pub size: u16,
     pub single_page: bool,
+    #[serde(default)]
+    pub bionic: bool,
     #[serde(default = "crate::theme::default_id")]
     pub theme: String,
     #[serde(default)]
@@ -120,6 +122,7 @@ impl Default for Database {
             font: "PT Serif".into(),
             size: 24,
             single_page: false,
+            bionic: false,
             theme: crate::theme::default_id(),
             books: BTreeMap::new(),
         }

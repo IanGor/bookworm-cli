@@ -34,9 +34,6 @@ const fn theme(
 }
 
 const DARK: &str = "Тёмная";
-const LIGHT: &str = "Светлая";
-
-// Reading palettes inspired by editor themes; muted and accent colors are tuned for text UI.
 pub const THEMES: &[Theme] = &[
     Theme {
         id: "terminal",
@@ -45,64 +42,10 @@ pub const THEMES: &[Theme] = &[
         palette: None,
     },
     theme(
-        "one-dark-pro",
-        "One Dark Pro",
+        "amber",
+        "Янтарь",
         DARK,
-        [0x282c34, 0xabb2bf, 0x919bab, 0x61afef],
-    ),
-    theme(
-        "dracula",
-        "Dracula",
-        DARK,
-        [0x282a36, 0xe6e6df, 0xa7a8ba, 0xbd93f9],
-    ),
-    theme(
-        "tokyo-night",
-        "Tokyo Night",
-        DARK,
-        [0x1a1b26, 0xc0caf5, 0x9099b7, 0x7aa2f7],
-    ),
-    theme(
-        "catppuccin-mocha",
-        "Catppuccin Mocha",
-        DARK,
-        [0x1e1e2e, 0xcdd6f4, 0xa6adc8, 0x89b4fa],
-    ),
-    theme(
-        "nord",
-        "Nord",
-        DARK,
-        [0x2e3440, 0xd8dee9, 0xa8b2c3, 0x88c0d0],
-    ),
-    theme(
-        "github-light",
-        "GitHub Light",
-        LIGHT,
-        [0xf6f8fa, 0x24292f, 0x57606a, 0x0969da],
-    ),
-    theme(
-        "solarized-light",
-        "Solarized Light",
-        LIGHT,
-        [0xfdf6e3, 0x435960, 0x536970, 0x176399],
-    ),
-    theme(
-        "gruvbox-light",
-        "Gruvbox Light",
-        LIGHT,
-        [0xfbf1c7, 0x3c3836, 0x65594f, 0x79520e],
-    ),
-    theme(
-        "catppuccin-latte",
-        "Catppuccin Latte",
-        LIGHT,
-        [0xeff1f5, 0x4c4f69, 0x5c5f77, 0x6940aa],
-    ),
-    theme(
-        "atom-one-light",
-        "Atom One Light",
-        LIGHT,
-        [0xfafafa, 0x383a42, 0x5e606c, 0x326ab3],
+        [0x211c19, 0xbda98e, 0xa18f7b, 0xefb45d],
     ),
 ];
 
@@ -150,7 +93,12 @@ mod tests {
 
     #[test]
     fn presets_have_distinct_ids_and_readable_colors() {
-        assert_eq!(THEMES.len(), 11);
+        assert_eq!(
+            THEMES.iter().map(|t| t.id).collect::<Vec<_>>(),
+            ["terminal", "amber"]
+        );
+        assert_eq!(index("one-dark-pro"), 0);
+        assert_eq!(index("lamp"), 0);
         assert_eq!(index("unknown"), 0);
         for (i, theme) in THEMES.iter().enumerate() {
             assert_eq!(index(theme.id), i);

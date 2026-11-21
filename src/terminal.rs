@@ -54,6 +54,7 @@ pub struct Terminal {
     original: libc::termios,
     handlers: Vec<(i32, libc::sigaction)>,
     images: Vec<u32>,
+    pub clears: u64,
     base: u32,
     input: VecDeque<u8>,
     pub window: Window,
@@ -79,6 +80,7 @@ impl Terminal {
             original,
             handlers: vec![],
             images: vec![],
+            clears: 0,
             base: std::process::id() * 4 + 1,
             input: VecDeque::new(),
             window: Window::default(),
@@ -222,6 +224,7 @@ impl Terminal {
         self.images.clear();
         let bg = self.background();
         write!(self.out, "\x1b[0;{bg}m\x1b[2J\x1b[H\x1b[0m")?;
+        self.clears += 1;
         Ok(())
     }
     pub fn image(&mut self, row: u32, col: u32, slot: u32, png: &[u8]) -> Result<u32> {

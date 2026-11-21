@@ -22,7 +22,7 @@ const HELP: &str = "Bookworm — локальная читалка FB2 и EPUB
   bookworm ПУТЬ         читать файл FB2, FB2.ZIP или EPUB
   bookworm --licenses   лицензии встроенных шрифтов
 
-В книге: ← → страницы, T оглавление, N сноски, F шрифт,
+В книге: ← → страницы, T оглавление, N сноски, F шрифт, S настройки,
 + и - кегль, V разворот, Y темы, D дефект вёрстки, B библиотека, ? помощь, Q выход.
 На последней странице E открывает подтверждение завершения.";
 #[derive(Debug)]
@@ -93,6 +93,41 @@ struct App {
     font_issue: Option<String>,
 }
 impl App {
+    fn settings(&mut self) -> Result<bool> {
+        let initial = self.store.db.bionic;
+        let mut selected = 0;
+        loop {
+            let mode = if self.store.db.bionic {
+                "Вкл."
+            } else {
+                "Выкл."
+            };
+            let items = [
+                format!("Бионическое чтение   {mode}"),
+                "Цветовые темы".into(),
+            ];
+            match ui::list(
+                &mut self.term,
+                List {
+                    title: "Настройки",
+                    subtitle: "Оформление и чтение",
+                    items: &items,
+                    empty: "",
+                    footer: "",
+                },
+                &mut selected,
+            )? {
+                Key::Exit => return Err(Quit.into()),
+                Key::Esc | Key::Char('q' | 's') => return Ok(initial != self.store.db.bionic),
+                Key::Enter if selected == 0 => {
+                    self.store.db.bionic = !self.store.db.bionic;
+                    self.store.save()?;
+                }
+                Key::Enter => self.themes()?,
+                _ => (),
+            }
+        }
+    }
     fn themes(&mut self) -> Result<()> {
         let current = theme::index(&self.store.db.theme);
         if let Some(index) = ui::theme_picker(&mut self.term, current)? {
@@ -142,17 +177,23 @@ impl App {
                 .unwrap_or_else(|| "Выберите папку с книгами клавишей D".into());
             let scan = self.scan.get_or_insert_with(Scan::default);
             scan.sort(&self.store.db);
+            let resume = scan.entries.iter().position(|entry| {
+                let book = &self.store.db.books[&entry.id];
+                book.last_read.is_some() && book.progress < 100
+            });
             let rows: Vec<_> = scan
                 .entries
                 .iter()
-                .map(|entry| {
+                .enumerate()
+                .map(|(index, entry)| {
                     let r = &self.store.db.books[&entry.id];
                     let author = if r.author().is_empty() {
                         "Автор неизвестен"
                     } else {
                         r.author()
                     };
-                    format!("{:>3}%   {}  —  {}", r.progress, r.title(), author)
+                    let mark = if resume == Some(index) { "o~" } else { "  " };
+                    format!("{mark} {:>3}%   {}  —  {}", r.progress, r.title(), author)
                 })
                 .collect();
             let subtitle = if scan.warnings.is_empty() {
@@ -171,12 +212,15 @@ impl App {
                     subtitle: &subtitle,
                     items: &rows,
                     empty: "Книг пока нет. D — выбрать папку, R — обновить.",
-                    footer: "  Y Темы   D Папка   R Обновить   W Ошибки   Q Выход",
+                    footer: "  S Настройки   Y Темы   D Папка   R Обновить   W Ошибки   Q Выход",
                 },
                 &mut selected,
             )?;
             match key {
                 Key::Exit | Key::Esc | Key::Char('q') => return Ok(()),
+                Key::Char('s') => {
+                    self.settings()?;
+                }
                 Key::Char('y') => self.themes()?,
                 Key::Char('d') => {
                     if let Some(dir) = ui::directory(&mut self.term, "Папка библиотеки")?
@@ -222,7 +266,8 @@ impl App {
             Ok(f) => (f, false),
             Err(_) => (fonts::load("PT Serif", &[])?, true),
         };
-        let g = frame.geometry(self.store.db.size, set.faces[0].x_height);
+        let mut g = frame.geometry(self.store.db.size, set.faces[0].x_height);
+        g.bionic = self.store.db.bionic;
         let book = Book::open(bytes, set, g).map_err(anyhow::Error::msg)?;
         Ok((Reader::new(book, frame, anchor)?, fallback))
     }
@@ -302,18 +347,27 @@ impl App {
         };
         let mut toc_focus = None;
         let mut full = true;
-        let mut palette = self.term.palette;
         loop {
             self.draw_reader(&id, &r, &status, toc_focus, None, full)?;
+            let clears = self.term.clears;
             status.clear();
             let mut reflow = false;
             let key = self.term.key()?.command();
-            if let Some(selected) = toc_focus.as_mut() {
+            if key == Key::Char('g') {
+                self.store.db.bionic = !self.store.db.bionic;
+                reflow = true;
+                status = if self.store.db.bionic {
+                    "Бионическое чтение включено".into()
+                } else {
+                    "Бионическое чтение выключено".into()
+                };
+            } else if let Some(selected) = toc_focus.as_mut() {
                 let count = r.book.doc.toc.len();
                 let step = toc_visible(self.term.window.rows);
                 match key {
                     Key::Exit | Key::Char('q') => return Err(Quit.into()),
                     Key::Esc | Key::Char('t') | Key::Resize => toc_focus = None,
+                    Key::Char('s') => reflow = self.settings()?,
                     Key::Char('y') => self.themes()?,
                     Key::Enter => {
                         r.jump(r.book.doc.toc[*selected].block);
@@ -398,6 +452,7 @@ impl App {
                     }
                     Key::Char('f') => reflow = self.font_menu()?,
                     Key::Char('d') => self.report_layout(path, &id, &r, fallback)?,
+                    Key::Char('s') => reflow = self.settings()?,
                     Key::Char('y') => self.themes()?,
                     Key::Char('?') => self.help()?,
                     _ => (),
@@ -406,8 +461,7 @@ impl App {
             let Some(frame) = self.frame()? else {
                 return Ok(());
             };
-            full = reflow || frame != r.frame || palette != self.term.palette;
-            palette = self.term.palette;
+            full = reflow || frame != r.frame || self.term.clears != clears;
             if reflow || frame.width != r.frame.width || frame.height != r.frame.height {
                 (r, fallback) = self.layout(&bytes, frame, r.anchor)?;
                 self.save_position(&id, &r)?;
@@ -611,7 +665,7 @@ impl App {
         let progress = state.progress();
         let summary = format!("{progress}%   {range} / {}", state.total);
         let footer_left = header_col;
-        let hint = "?  Клавиши";
+        let hint = "[?] Клавиши";
         let hint_col = (window.cols + 1).saturating_sub(hint.chars().count() as u32 + 2);
         let space = hint_col.saturating_sub(footer_left + summary.chars().count() as u32 + 4);
         let track = space.min(27);
@@ -657,8 +711,13 @@ impl App {
                 TITLE,
             )?;
         } else if window.cols >= 90 && toc_focus.is_none() {
-            self.term
-                .text(window.rows, hint_col - 18, 16, "← →  Листать", MUTED)?;
+            let turn_hint = "[←] [→] Листать";
+            let turn_width = turn_hint.chars().count() as u32;
+            let turn_col = hint_col.saturating_sub(turn_width + 3);
+            if turn_col > summary_col + summary.chars().count() as u32 {
+                self.term
+                    .text(window.rows, turn_col, turn_width, turn_hint, MUTED)?;
+            }
         }
         if hint_col > summary_col + summary.chars().count() as u32 {
             self.term.text(
@@ -913,6 +972,8 @@ impl App {
             "T   Оглавление и переход к разделу",
             "N   Сноски открытых страниц",
             "F   Выбор гарнитуры и папки с TTF / OTF",
+            "S   Настройки чтения и оформления",
+            "G   Включить / выключить бионическое чтение",
             "Y   Настройки цветовой темы",
             "D   Выделить фрагмент и описать дефект вёрстки",
             "+ / -   Увеличить / уменьшить кегль",

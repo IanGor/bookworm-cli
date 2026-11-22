@@ -150,7 +150,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert toc_hint.encode() not in s.until(FOOT)
         s.send('Y')
         popup = s.until(THEME_FOOT)
-        for name in ('Цветовые темы', 'Как в терминале', 'Янтарь'):
+        for name in ('Цветовые темы', 'Как в терминале', 'Янтарь', 'Светлый янтарь'):
             assert name.encode() in popup
         assert b'One Dark Pro' not in popup
         assert 'Лампа'.encode() not in popup
@@ -333,17 +333,20 @@ with tempfile.TemporaryDirectory() as tmp:
         assert Path(record(root)[0]['folder']) == books.parent
         s.send('Y')
         s.until(THEME_FOOT)
-        s.send('\x1b[B')
+        s.send('\x1b[F')
         s.until(THEME_FOOT)
         s.send('\r')
-        assert b'48;2;33;28;25' in s.until('Q Выход')
-        assert record(root)[0]['theme'] == 'amber'
+        light_amber = s.until('Q Выход')
+        assert b'48;2;255;245;227' in light_amber and b'38;2;133;71;5' in light_amber
+        assert record(root)[0]['theme'] == 'light-amber'
         s.send('q')
         s.restored(0)
 
     with Session(root, path) as s:
         s.probe()
-        assert b'48;2;33;28;25' in s.until(FOOT)
+        light_amber = s.until(FOOT)
+        assert b'48;2;255;245;227' in light_amber and b'38;2;48;37;27' in light_amber
+        assert images(light_amber)
         s.send('G')
         before_restart = APC.findall(s.until(FOOT))
         assert before_restart

@@ -47,6 +47,12 @@ pub const THEMES: &[Theme] = &[
         DARK,
         [0x211c19, 0xbda98e, 0xa18f7b, 0xefb45d],
     ),
+    theme(
+        "light-amber",
+        "Светлый янтарь",
+        "Светлая",
+        [0xfff5e3, 0x30251b, 0x665544, 0x854705],
+    ),
 ];
 
 pub fn index(id: &str) -> usize {
@@ -95,7 +101,7 @@ mod tests {
     fn presets_have_distinct_ids_and_readable_colors() {
         assert_eq!(
             THEMES.iter().map(|t| t.id).collect::<Vec<_>>(),
-            ["terminal", "amber"]
+            ["terminal", "amber", "light-amber"]
         );
         assert_eq!(index("one-dark-pro"), 0);
         assert_eq!(index("lamp"), 0);

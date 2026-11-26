@@ -5,9 +5,9 @@ use std::{
     collections::BTreeMap,
     env,
     fmt::Write as _,
-    fs::{self, File, OpenOptions},
+    fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -68,7 +68,7 @@ pub fn parse_utc(t: &str) -> Option<(i64, u32)> {
     Some((secs as i64, time.nanosecond))
 }
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
     pub block: u32,
@@ -200,12 +200,12 @@ pub fn data_path() -> Result<PathBuf> {
 }
 
 #[derive(PartialEq)]
-struct Snapshot {
+pub(crate) struct Snapshot {
     dev: u64,
     ino: u64,
-    bytes: Vec<u8>,
+    pub bytes: Vec<u8>,
 }
-fn snapshot(path: &Path) -> Result<Option<Snapshot>> {
+pub(crate) fn snapshot(path: &Path) -> Result<Option<Snapshot>> {
     let mut file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -227,6 +227,74 @@ fn snapshot(path: &Path) -> Result<Option<Snapshot>> {
 }
 const CONFLICT: &str =
     "Файл базы изменён извне. Сохранение остановлено. Откройте библиотеку заново.";
+
+pub(crate) fn publish(
+    path: &Path,
+    original: &mut Option<Snapshot>,
+    bytes: Vec<u8>,
+    dir_mode: Option<u32>,
+    conflict: &str,
+) -> Result<()> {
+    let parent = path.parent().context("Путь базы без каталога")?;
+    if let Some(mode) = dir_mode {
+        DirBuilder::new().recursive(true).mode(mode).create(parent)?;
+    } else {
+        fs::create_dir_all(parent)?;
+    }
+    let dir = File::open(parent)?;
+    dir.lock()?; // Serializes compare + publish across reader processes, even on first save.
+    ensure!(snapshot(path)?.as_ref() == original.as_ref(), "{conflict}");
+    if original.as_ref().is_some_and(|s| s.bytes == bytes) {
+        return Ok(());
+    }
+    let tmp = parent.join(format!(".bookworm-{}-{}.tmp", std::process::id(), now()));
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    let mut remove_tmp = true;
+    let result = (|| -> Result<()> {
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+        let meta = f.metadata()?;
+        ensure!(snapshot(path)?.as_ref() == original.as_ref(), "{conflict}");
+        if original.is_none() {
+            fs::hard_link(&tmp, path).with_context(|| conflict.to_owned())?;
+        } else {
+            // Atomic exchange keeps the displaced inode until we have checked it.
+            exchange(&tmp, path)?;
+            remove_tmp = false;
+            if !snapshot(&tmp).is_ok_and(|displaced| displaced.as_ref() == original.as_ref()) {
+                // If another writer also replaced our publication, preserve the
+                // displaced file for recovery instead of clobbering that writer.
+                if fs::symlink_metadata(path)
+                    .is_ok_and(|m| m.ino() == meta.ino() && m.dev() == meta.dev())
+                    && snapshot(path)?.is_some_and(|s| s.bytes == bytes)
+                {
+                    exchange(&tmp, path)?;
+                    remove_tmp = true;
+                } else {
+                    bail!("{conflict} Предыдущая версия в {}", tmp.display());
+                }
+                bail!("{conflict}");
+            }
+            remove_tmp = true;
+        }
+        *original = Some(Snapshot {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            bytes,
+        });
+        Ok(())
+    })();
+    if remove_tmp {
+        fs::remove_file(&tmp)?;
+    }
+    result?;
+    dir.sync_all()?;
+    Ok(())
+}
 
 pub struct Store {
     pub path: PathBuf,
@@ -255,61 +323,7 @@ impl Store {
     pub fn save(&mut self) -> Result<()> {
         self.db.validate()?;
         let bytes = toml::to_string_pretty(&self.db)?.into_bytes();
-        let parent = self.path.parent().context("Путь базы без каталога")?;
-        fs::create_dir_all(parent)?;
-        let dir = File::open(parent)?;
-        dir.lock()?; // Serializes compare + publish across reader processes, even on first save.
-        ensure!(snapshot(&self.path)? == self.original, CONFLICT);
-        if self.original.as_ref().is_some_and(|s| s.bytes == bytes) {
-            return Ok(());
-        }
-        let tmp = parent.join(format!(".bookworm-{}-{}.tmp", std::process::id(), now()));
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        let mut remove_tmp = true;
-        let result = (|| -> Result<()> {
-            f.write_all(&bytes)?;
-            f.sync_all()?;
-            let meta = f.metadata()?;
-            ensure!(snapshot(&self.path)? == self.original, CONFLICT);
-            if self.original.is_none() {
-                fs::hard_link(&tmp, &self.path).context(CONFLICT)?;
-            } else {
-                // Atomic exchange keeps the displaced inode until we have checked it.
-                exchange(&tmp, &self.path)?;
-                remove_tmp = false;
-                if !snapshot(&tmp).is_ok_and(|displaced| displaced == self.original) {
-                    // If another writer also replaced our publication, preserve the
-                    // displaced file for recovery instead of clobbering that writer.
-                    if fs::symlink_metadata(&self.path)
-                        .is_ok_and(|m| m.ino() == meta.ino() && m.dev() == meta.dev())
-                        && snapshot(&self.path)?.is_some_and(|s| s.bytes == bytes)
-                    {
-                        exchange(&tmp, &self.path)?;
-                        remove_tmp = true;
-                    } else {
-                        bail!("{CONFLICT} Предыдущая версия в {}", tmp.display());
-                    }
-                    bail!(CONFLICT);
-                }
-                remove_tmp = true;
-            }
-            self.original = Some(Snapshot {
-                dev: meta.dev(),
-                ino: meta.ino(),
-                bytes,
-            });
-            Ok(())
-        })();
-        if remove_tmp {
-            fs::remove_file(&tmp)?;
-        }
-        result?;
-        dir.sync_all()?;
-        Ok(())
+        publish(&self.path, &mut self.original, bytes, None, CONFLICT)
     }
 }
 fn exchange(a: &Path, b: &Path) -> io::Result<()> {

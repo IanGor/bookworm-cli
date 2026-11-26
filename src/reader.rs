@@ -155,6 +155,18 @@ impl Reader {
         self.anchor = pos.into();
         self.page = self.book.page_of(pos);
     }
+    pub fn jump_to(&mut self, anchor: Anchor) {
+        let block = (anchor.block as usize).min(self.book.doc.blocks.len().saturating_sub(1));
+        let max_offset = self.book.doc.blocks.get(block).map_or(0, |b| {
+            b.spans.iter().flat_map(|s| s.text.chars()).count() as u32
+        });
+        let pos = Position {
+            block: block as u32,
+            offset: anchor.offset.min(max_offset),
+        };
+        self.anchor = pos.into();
+        self.page = self.book.page_of(pos);
+    }
     pub fn notes(&self) -> Vec<String> {
         let mut ids = Vec::new();
         for n in self.page..(self.page + self.frame.pages).min(self.book.page_count()) {

@@ -361,3 +361,168 @@ fn completed_books_move_to_bottom_by_latest_completion_and_rereading_restores_ac
     assert_eq!(r.completions.len(), 2);
     assert!(r.completed_at().is_some());
 }
+
+#[test]
+fn quote_store_sorts_by_book_order_detects_conflicts_and_validates_schema() {
+    use bookworm::quotes::{Quote, QuoteStore};
+    use std::os::unix::fs::PermissionsExt;
+    let d = Temp::new();
+    let path = d
+        .0
+        .join("quotes/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.toml");
+
+    let mut store = QuoteStore::open(&path).unwrap();
+    assert!(store.quotes.is_empty());
+    assert!(!path.exists());
+
+    store.add(Quote {
+        start: Anchor {
+            block: 5,
+            offset: 2,
+        },
+        end: Anchor {
+            block: 5,
+            offset: 10,
+        },
+        chapter: "Глава 2".into(),
+        text: "Поздний фрагмент".into(),
+        comment: Some("Заметка".into()),
+        created_at: "2026-11-27T01:00:00Z".into(),
+    });
+    store.add(Quote {
+        start: Anchor {
+            block: 1,
+            offset: 0,
+        },
+        end: Anchor {
+            block: 2,
+            offset: 4,
+        },
+        chapter: String::new(),
+        text: "Ранний фрагмент".into(),
+        comment: None,
+        created_at: "2026-11-27T01:05:00Z".into(),
+    });
+    store.save().unwrap();
+
+    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+
+    let raw = fs::read_to_string(&path).unwrap();
+    assert!(!raw.contains("comment = \"\""));
+    assert!(!raw.contains("chapter = \"\""));
+
+    let mut reopened = QuoteStore::open(&path).unwrap();
+    assert_eq!(reopened.quotes.len(), 2);
+    assert_eq!(reopened.quotes[0].text, "Ранний фрагмент");
+    assert_eq!(reopened.quotes[0].comment, None);
+    assert_eq!(reopened.quotes[1].text, "Поздний фрагмент");
+
+    // External modification must block saving without clobbering disk bytes.
+    let mut stale = QuoteStore::open(&path).unwrap();
+    reopened.quotes.remove(0);
+    reopened.save().unwrap();
+    let expected_on_disk = fs::read(&path).unwrap();
+    stale.quotes.clear();
+    assert!(stale.save().is_err());
+    assert_eq!(fs::read(&path).unwrap(), expected_on_disk);
+
+    // Deleting the last quote leaves an empty store on reopen.
+    let mut single = QuoteStore::open(&path).unwrap();
+    assert_eq!(single.quotes.len(), 1);
+    single.quotes.clear();
+    single.save().unwrap();
+    assert!(QuoteStore::open(&path).unwrap().quotes.is_empty());
+
+    // Invalid ranges, empty text, or non-UTC timestamps are rejected.
+    for bad in [
+        "version = 1\n[[quotes]]\nstart = { block = 2, offset = 5 }\nend = { block = 2, offset = 5 }\ntext = \"x\"\ncreated_at = \"2026-11-27T01:00:00Z\"\n",
+        "version = 1\n[[quotes]]\nstart = { block = 0, offset = 0 }\nend = { block = 0, offset = 1 }\ntext = \"\"\ncreated_at = \"2026-11-27T01:00:00Z\"\n",
+        "version = 1\n[[quotes]]\nstart = { block = 0, offset = 0 }\nend = { block = 0, offset = 1 }\ntext = \"x\"\ncreated_at = \"2026-11-27\"\n",
+    ] {
+        fs::write(&path, bad).unwrap();
+        assert!(QuoteStore::open(&path).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn extract_quote_keeps_full_text_skips_empty_blocks_and_jump_to_clamps_bounds() {
+    use bookworm::{fonts, quotes::extract_quote, reader::Reader};
+    use bookworm_core::book::Book;
+    let long_a = ["Абзац один"; 100].join(" ");
+    let long_b = ["Абзац два"; 100].join(" ");
+    let xml = format!(
+        "<FictionBook><body><section><title><p>Часть I</p></title>\
+         <p>{long_a}</p><empty-line/><p>{long_b}</p></section></body></FictionBook>"
+    );
+    let set = fonts::load("PT Serif", &[]).unwrap();
+    let frame = Frame::new(
+        Window {
+            cols: 80,
+            rows: 30,
+            width: 800,
+            height: 600,
+        },
+        24,
+        true,
+    )
+    .unwrap();
+    let g = frame.geometry(24, set.faces[0].x_height);
+    let book = Book::open(xml.as_bytes(), set, g).unwrap();
+    let first_para = book
+        .doc
+        .blocks
+        .iter()
+        .position(|b| b.text().starts_with("Абзац один"))
+        .unwrap();
+    let last_block = book.doc.blocks.len() - 1;
+    let end_chars = book.doc.blocks[last_block]
+        .spans
+        .iter()
+        .flat_map(|s| s.text.chars())
+        .count() as u32;
+
+    let (chapter, text) = extract_quote(
+        &book.doc,
+        Anchor {
+            block: first_para as u32,
+            offset: 0,
+        },
+        Anchor {
+            block: last_block as u32,
+            offset: end_chars,
+        },
+    );
+    assert_eq!(chapter, "Часть I");
+    assert_eq!(text, format!("{long_a}\n\n{long_b}"));
+    assert!(!text.contains("[…]"));
+
+    // Boundary ending at offset 0 of next block produces no trailing "\n\n".
+    let (_, clean_tail) = extract_quote(
+        &book.doc,
+        Anchor {
+            block: first_para as u32,
+            offset: 0,
+        },
+        Anchor {
+            block: (first_para + 1) as u32,
+            offset: 0,
+        },
+    );
+    assert_eq!(clean_tail, long_a);
+
+    let mut reader = Reader::new(book, frame, Anchor::default()).unwrap();
+    reader.jump_to(Anchor {
+        block: 9999,
+        offset: 5000,
+    });
+    assert_eq!(reader.anchor.block as usize, last_block);
+    assert_eq!(reader.anchor.offset, end_chars);
+}

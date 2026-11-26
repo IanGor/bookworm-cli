@@ -98,6 +98,7 @@ impl Reading {
         if !confirmed || !self.at_end() {
             return false;
         }
+        r.rereading = false;
         r.completions.push(now());
         true
     }

@@ -1,4 +1,4 @@
-use crate::storage::{Database, content_id};
+use crate::storage::{Database, content_id, parse_utc};
 use anyhow::{Result, ensure};
 use std::{
     collections::HashSet,
@@ -17,13 +17,49 @@ pub struct Scan {
     pub warnings: Vec<String>,
 }
 
+pub fn completion_month(utc: &str) -> Option<String> {
+    let (secs, _) = parse_utc(utc)?;
+    let t = secs as libc::time_t;
+    let mut local = std::mem::MaybeUninit::uninit();
+    if unsafe { libc::localtime_r(&t, local.as_mut_ptr()) }.is_null() {
+        return None;
+    }
+    let local = unsafe { local.assume_init() };
+    const MONTHS: [&str; 12] = [
+        "Январь",
+        "Февраль",
+        "Март",
+        "Апрель",
+        "Май",
+        "Июнь",
+        "Июль",
+        "Август",
+        "Сентябрь",
+        "Октябрь",
+        "Ноябрь",
+        "Декабрь",
+    ];
+    let month = MONTHS.get(local.tm_mon as usize)?;
+    Some(format!("{month} {}", local.tm_year + 1900))
+}
+
 impl Scan {
     pub fn sort(&mut self, db: &Database) {
         self.entries.sort_by(|a, b| {
             let ar = &db.books[&a.id];
             let br = &db.books[&b.id];
-            br.last_read
-                .cmp(&ar.last_read)
+            let ac = ar.completed_at().and_then(parse_utc);
+            let bc = br.completed_at().and_then(parse_utc);
+            ac.is_some()
+                .cmp(&bc.is_some())
+                .then_with(|| match (ac, bc) {
+                    (Some(at), Some(bt)) => bt.cmp(&at),
+                    _ => br
+                        .last_read
+                        .as_deref()
+                        .and_then(parse_utc)
+                        .cmp(&ar.last_read.as_deref().and_then(parse_utc)),
+                })
                 .then_with(|| ar.title().to_lowercase().cmp(&br.title().to_lowercase()))
                 .then_with(|| a.path.cmp(&b.path))
         });

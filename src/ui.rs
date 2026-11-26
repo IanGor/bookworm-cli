@@ -202,14 +202,57 @@ pub fn notice(t: &mut Terminal, heading: &str, message: &str) -> Result<Key> {
         }
     }
 }
+#[derive(Default)]
 pub struct List<'a> {
     pub title: &'a str,
     pub subtitle: &'a str,
     pub items: &'a [String],
+    pub sections: &'a [(usize, String)],
+    pub item_action: Option<(&'a [bool], &'a str)>,
     pub empty: &'a str,
     pub footer: &'a str,
 }
+
+#[derive(Debug, PartialEq, Eq)]
+enum Row<'a> {
+    Section(&'a str),
+    Item(usize, &'a str),
+}
+
+fn layout_rows<'a>(
+    items: &'a [String],
+    sections: &'a [(usize, String)],
+    selected: usize,
+    visible: usize,
+    first: &mut usize,
+) -> Vec<Row<'a>> {
+    let mut rows = Vec::with_capacity(items.len() + sections.len());
+    let mut sel_row = 0;
+    for (i, item) in items.iter().enumerate() {
+        for (at, label) in sections {
+            if *at == i {
+                rows.push(Row::Section(label));
+            }
+        }
+        if i == selected {
+            sel_row = rows.len();
+        }
+        rows.push(Row::Item(i, item));
+    }
+    let anchor = if visible >= 2 && sel_row > 0 && matches!(rows[sel_row - 1], Row::Section(_)) {
+        sel_row - 1
+    } else {
+        sel_row
+    };
+    *first = (*first)
+        .min(anchor)
+        .max((sel_row + 1).saturating_sub(visible))
+        .min(rows.len().saturating_sub(visible));
+    rows.into_iter().skip(*first).take(visible).collect()
+}
+
 pub fn list(t: &mut Terminal, list: List<'_>, selected: &mut usize) -> Result<Key> {
+    let mut first = 0;
     loop {
         t.begin_frame()?;
         title(t, list.title)?;
@@ -217,29 +260,39 @@ pub fn list(t: &mut Terminal, list: List<'_>, selected: &mut usize) -> Result<Ke
         let count = list.items.len();
         let visible = t.window.rows.saturating_sub(5).max(1) as usize;
         *selected = (*selected).min(count.saturating_sub(1));
-        let start = (*selected / visible) * visible;
         if count == 0 {
             t.line(4, &format!("  {}", list.empty), NORMAL)?;
         }
-        for (i, item) in list.items.iter().enumerate().skip(start).take(visible) {
-            let (mark, style) = if i == *selected {
-                ("›", SELECTED)
-            } else {
-                (" ", NORMAL)
-            };
-            t.line((4 + i - start) as u32, &format!(" {mark} {item}"), style)?;
+        for (offset, row) in layout_rows(list.items, list.sections, *selected, visible, &mut first)
+            .into_iter()
+            .enumerate()
+        {
+            let y = (4 + offset) as u32;
+            match row {
+                Row::Section(label) => t.line(y, &format!("  {label}"), MUTED)?,
+                Row::Item(i, item) => {
+                    let (mark, style) = if i == *selected {
+                        ("›", SELECTED)
+                    } else {
+                        (" ", NORMAL)
+                    };
+                    t.line(y, &format!(" {mark} {item}"), style)?;
+                }
+            }
         }
-        t.line(
-            t.window.rows.saturating_sub(1),
-            "  ↑↓ Выбор   PgUp/PgDn Листать   Enter Открыть   Esc Назад",
-            MUTED,
-        )?;
+        let keys = match list.item_action {
+            Some((flags, action)) if flags.get(*selected) == Some(&true) => {
+                format!("  ↑↓ Выбор   PgUp/PgDn   Enter Открыть   {action}   Esc Назад")
+            }
+            _ => "  ↑↓ Выбор   PgUp/PgDn Листать   Enter Открыть   Esc Назад".into(),
+        };
+        t.line(t.window.rows.saturating_sub(1), &keys, MUTED)?;
         t.line(t.window.rows, list.footer, MUTED)?;
         t.end_frame()?;
         match t.key()?.command() {
-            Key::Down | Key::Char('j') => *selected = selected.saturating_add(1),
+            Key::Down | Key::Char('j') => *selected = (*selected + 1).min(count.saturating_sub(1)),
             Key::Up | Key::Char('k') => *selected = selected.saturating_sub(1),
-            Key::PageDown => *selected = selected.saturating_add(visible),
+            Key::PageDown => *selected = (*selected + visible).min(count.saturating_sub(1)),
             Key::PageUp => *selected = selected.saturating_sub(visible),
             Key::Home => *selected = 0,
             Key::End => *selected = count.saturating_sub(1),
@@ -305,4 +358,61 @@ fn resolve_directory(input: &str) -> Result<PathBuf> {
         .with_context(|| format!("Не удалось открыть {}", path.display()))?;
     ensure!(path.is_dir(), "Выберите папку");
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_rows_keeps_section_header_with_selected_book_and_caps_height() {
+        let items: Vec<_> = ["Активная", "Неначатая", "Ноябрьская", "Октябрьская"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let sections = [
+            (2, "── Ноябрь 2026 ──".into()),
+            (3, "── Октябрь 2026 ──".into()),
+        ];
+        let mut first = 0;
+
+        // Moving down to item 2 in a 3-row viewport includes both the header and item 2.
+        let slice = layout_rows(&items, &sections, 2, 3, &mut first);
+        assert_eq!(
+            slice,
+            vec![
+                Row::Item(1, "Неначатая"),
+                Row::Section("── Ноябрь 2026 ──"),
+                Row::Item(2, "Ноябрьская"),
+            ]
+        );
+
+        // Moving down to item 3 advances the viewport without exceeding 3 rows.
+        let slice = layout_rows(&items, &sections, 3, 3, &mut first);
+        assert_eq!(
+            slice,
+            vec![
+                Row::Item(2, "Ноябрьская"),
+                Row::Section("── Октябрь 2026 ──"),
+                Row::Item(3, "Октябрьская"),
+            ]
+        );
+
+        // Moving back up to item 2 pulls its month header back into view above it.
+        let slice = layout_rows(&items, &sections, 2, 2, &mut first);
+        assert_eq!(
+            slice,
+            vec![
+                Row::Section("── Ноябрь 2026 ──"),
+                Row::Item(2, "Ноябрьская"),
+            ]
+        );
+
+        // On a 1-row viewport, the selected book wins over its section header.
+        let mut tiny_first = 0;
+        assert_eq!(
+            layout_rows(&items, &sections, 2, 1, &mut tiny_first),
+            vec![Row::Item(2, "Ноябрьская")]
+        );
+    }
 }

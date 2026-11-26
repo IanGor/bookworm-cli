@@ -112,8 +112,7 @@ impl App {
                     title: "Настройки",
                     subtitle: "Оформление и чтение",
                     items: &items,
-                    empty: "",
-                    footer: "",
+                    ..Default::default()
                 },
                 &mut selected,
             )? {
@@ -179,14 +178,29 @@ impl App {
             scan.sort(&self.store.db);
             let resume = scan.entries.iter().position(|entry| {
                 let book = &self.store.db.books[&entry.id];
-                book.last_read.is_some() && book.progress < 100
+                book.completed_at().is_none() && book.last_read.is_some() && book.progress < 100
             });
+            let mut sections = Vec::new();
+            let mut last_month = None;
+            let mut completed = Vec::with_capacity(scan.entries.len());
             let rows: Vec<_> = scan
                 .entries
                 .iter()
                 .enumerate()
                 .map(|(index, entry)| {
                     let r = &self.store.db.books[&entry.id];
+                    if let Some(ts) = r.completed_at() {
+                        completed.push(true);
+                        let month = library::completion_month(ts);
+                        if month != last_month {
+                            if let Some(label) = &month {
+                                sections.push((index, format!("── {label} ──")));
+                            }
+                            last_month = month;
+                        }
+                    } else {
+                        completed.push(false);
+                    }
                     let author = if r.author().is_empty() {
                         "Автор неизвестен"
                     } else {
@@ -211,6 +225,8 @@ impl App {
                     title: "Библиотека",
                     subtitle: &subtitle,
                     items: &rows,
+                    sections: &sections,
+                    item_action: Some((&completed, "E Не прочитано")),
                     empty: "Книг пока нет. D — выбрать папку, R — обновить.",
                     footer: "  S Настройки   Y Темы   D Папка   R Обновить   W Ошибки   Q Выход",
                 },
@@ -244,11 +260,46 @@ impl App {
                             items: warnings,
                             empty: "Ошибок нет",
                             footer: "  Esc Назад",
+                            ..Default::default()
                         },
                         &mut 0,
                     )? == Key::Exit
                     {
                         return Err(Quit.into());
+                    }
+                }
+                Key::Char('e') => {
+                    if let Some(entry) = scan.entries.get(selected)
+                        && self.store.db.books[&entry.id].completed_at().is_some()
+                    {
+                        let id = entry.id.clone();
+                        loop {
+                            self.term.begin_frame()?;
+                            ui::title(&mut self.term, "Снять пометку о прочтении?")?;
+                            self.term.line(
+                                3,
+                                "  Книга вернётся в общий список с текущим процентом чтения.",
+                                NORMAL,
+                            )?;
+                            self.term
+                                .line(5, "  Y / Д Подтвердить   Esc Отмена", TITLE)?;
+                            self.term.end_frame()?;
+                            match self.term.key()?.command() {
+                                Key::Resize => continue,
+                                Key::Exit => return Err(Quit.into()),
+                                Key::Char('y' | 'д' | 'Д') => {
+                                    self.store.db.books.get_mut(&id).unwrap().rereading = true;
+                                    self.store.save()?;
+                                    scan.sort(&self.store.db);
+                                    if let Some(pos) = scan.entries.iter().position(|e| e.id == id)
+                                    {
+                                        selected = pos;
+                                    }
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
                     }
                 }
                 Key::Enter => {
@@ -798,6 +849,7 @@ impl App {
                     items: &items,
                     empty: "В книге нет оглавления",
                     footer: "  Enter Перейти к разделу   Esc Вернуться к чтению",
+                    ..Default::default()
                 },
                 &mut i,
             )? {
@@ -837,6 +889,7 @@ impl App {
                     items: &labels,
                     empty: "На этих страницах нет сносок",
                     footer: "  Enter Читать сноску   Esc Вернуться к книге",
+                    ..Default::default()
                 },
                 &mut selected,
             )? {
@@ -930,8 +983,8 @@ impl App {
                     title: "Шрифт",
                     subtitle: &detail,
                     items: &labels,
-                    empty: "",
                     footer: "  D Папка шрифтов   Enter Выбрать   Esc Назад",
+                    ..Default::default()
                 },
                 &mut selected,
             )? {
@@ -991,8 +1044,8 @@ impl App {
                     title: "Клавиши чтения",
                     subtitle: "Буквенные команды — в латинской раскладке",
                     items: &items,
-                    empty: "",
                     footer: "  Esc Вернуться к чтению",
+                    ..Default::default()
                 },
                 &mut i,
             )? {

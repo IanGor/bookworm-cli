@@ -51,6 +51,23 @@ pub fn now() -> String {
     )
 }
 
+pub fn parse_utc(t: &str) -> Option<(i64, u32)> {
+    if !t.ends_with('Z') {
+        return None;
+    }
+    let dt: toml::value::Datetime = t.parse().ok()?;
+    let (d, time) = (dt.date?, dt.time?);
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = i32::from(d.year) - 1900;
+    tm.tm_mon = i32::from(d.month) - 1;
+    tm.tm_mday = i32::from(d.day);
+    tm.tm_hour = i32::from(time.hour);
+    tm.tm_min = i32::from(time.minute);
+    tm.tm_sec = i32::from(time.second);
+    let secs = unsafe { libc::timegm(&mut tm) };
+    Some((secs as i64, time.nanosecond))
+}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
@@ -84,6 +101,8 @@ pub struct Record {
     pub anchor: Anchor,
     pub progress: u8,
     pub last_read: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rereading: bool,
     pub completions: Vec<String>,
 }
 impl Record {
@@ -94,6 +113,16 @@ impl Record {
         self.author_override
             .as_deref()
             .unwrap_or(&self.source_author)
+    }
+    pub fn completed_at(&self) -> Option<&str> {
+        if self.rereading {
+            None
+        } else {
+            self.completions
+                .iter()
+                .max_by_key(|t| parse_utc(t))
+                .map(String::as_str)
+        }
     }
 }
 

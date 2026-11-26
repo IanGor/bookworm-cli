@@ -1,5 +1,6 @@
 """A minimal Ghostty/Kitty peer. Inspect the actual bytes written by the CLI."""
 import base64
+from datetime import datetime
 import fcntl
 import hashlib
 import os
@@ -323,14 +324,56 @@ with tempfile.TemporaryDirectory() as tmp:
             s.until(FOOT)
             dates = record(root)[1]['completions']
             assert len(set(dates)) == count
+        s.send('T')
+        s.until('Перейти к разделу')
+        s.send('\x1b[H\r')
+        s.until(FOOT)
+        for _ in range(4):
+            s.send('\x1b[C')
+            s.until(FOOT)
+        example_id = hashlib.sha256(path.read_bytes()).hexdigest()
+        mid_progress = record(root)[0]['books'][example_id]['progress']
+        assert 0 < mid_progress < 100, mid_progress
+        (books / 'second.fb2').write_text(
+            '<FictionBook><description><title-info><book-title>Солярис</book-title>'
+            '</title-info></description><body><section><p>Океан.</p></section></body></FictionBook>'
+        )
         s.send('b')
         s.until('D Папка')
         s.send('D')
         s.until('Backspace Стереть')
         s.send('~/Книги\r')
-        s.until('Проверка экрана')
-        s.until('Q Выход')
+        lib_screen = s.until('Q Выход')
         assert Path(record(root)[0]['folder']) == books.parent
+        months = ('Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+                  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь')
+        dt = datetime.fromisoformat(dates[-1]).astimezone()
+        divider = f'── {months[dt.month - 1]} {dt.year} ──'.encode()
+        assert 'Книг — 2'.encode() in lib_screen
+        assert b'o~' not in lib_screen
+        assert 'E Не прочитано'.encode() not in lib_screen
+        assert lib_screen.index('Солярис'.encode()) < lib_screen.index(divider) < lib_screen.index('Проверка экрана'.encode())
+        s.send('e')
+        assert f'›    {0:>3}%   Солярис'.encode() in s.until('Q Выход')
+        s.send('\x1b[B')
+        down_screen = s.until('Q Выход')
+        assert f'›    {mid_progress:>3}%   Проверка экрана'.encode() in down_screen
+        assert 'E Не прочитано'.encode() in down_screen and 'Esc Назад'.encode() in down_screen
+        s.send('E')
+        s.until('Снять пометку о прочтении?')
+        s.until('Esc Отмена')
+        s.send('\x1b')
+        assert divider in s.until('Q Выход')
+        assert not record(root)[0]['books'][example_id].get('rereading', False)
+        s.send('E')
+        s.until('Esc Отмена')
+        s.send('y')
+        unmarked = s.until('Q Выход')
+        example_rec = record(root)[0]['books'][example_id]
+        assert example_rec['rereading'] is True and len(example_rec['completions']) == 2
+        assert divider not in unmarked
+        assert f'› o~ {mid_progress:>3}%   Проверка экрана'.encode() in unmarked
+        assert unmarked.index('Проверка экрана'.encode()) < unmarked.index('Солярис'.encode())
         s.send('Y')
         s.until(THEME_FOOT)
         s.send('\x1b[F')

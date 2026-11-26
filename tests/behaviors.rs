@@ -230,3 +230,134 @@ fn replacing_with_symlink_or_deleting_during_session_is_a_conflict() {
     assert_eq!(fs::read(backup).unwrap(), original);
     assert!(p.is_symlink());
 }
+
+#[test]
+fn completed_books_move_to_bottom_by_latest_completion_and_rereading_restores_active() {
+    let d = Temp::new();
+    let p = d.0.join("library.toml");
+    let mut store = Store::open(&p).unwrap();
+
+    let id_unread = "0000000000000000000000000000000000000000000000000000000000000001";
+    let id_active = "0000000000000000000000000000000000000000000000000000000000000002";
+    let id_done_older = "0000000000000000000000000000000000000000000000000000000000000003";
+    let id_done_newer = "0000000000000000000000000000000000000000000000000000000000000004";
+    let id_done_subsec = "0000000000000000000000000000000000000000000000000000000000000005";
+
+    store.db.books.insert(
+        id_unread.into(),
+        Record {
+            source_title: "Анна Каренина".into(),
+            ..Default::default()
+        },
+    );
+    store.db.books.insert(
+        id_active.into(),
+        Record {
+            source_title: "Солярис".into(),
+            progress: 40,
+            last_read: Some("2026-10-01T12:00:00Z".into()),
+            ..Default::default()
+        },
+    );
+    // Reopened mid-book with a newer last_read, yet still marked completed: stays at bottom.
+    store.db.books.insert(
+        id_done_older.into(),
+        Record {
+            source_title: "Мастер и Маргарита".into(),
+            progress: 25,
+            last_read: Some("2026-11-26T18:00:00Z".into()),
+            completions: vec!["2026-09-15T12:00:00Z".into()],
+            ..Default::default()
+        },
+    );
+    // Multiple completions: grouped by the latest one.
+    store.db.books.insert(
+        id_done_newer.into(),
+        Record {
+            source_title: "Пикник на обочине".into(),
+            progress: 100,
+            last_read: Some("2026-11-19T12:00:00Z".into()),
+            completions: vec!["2025-05-10T12:00:00Z".into(), "2026-11-19T12:00:00Z".into()],
+            ..Default::default()
+        },
+    );
+    // Fractional-second completion 0.5s after id_done_newer must sort ahead of it.
+    store.db.books.insert(
+        id_done_subsec.into(),
+        Record {
+            source_title: "Трудно быть богом".into(),
+            progress: 100,
+            last_read: Some("2026-11-19T12:00:01Z".into()),
+            completions: vec!["2026-11-19T12:00:00.500000000Z".into()],
+            ..Default::default()
+        },
+    );
+
+    let mut scan = library::Scan {
+        entries: [
+            id_done_older,
+            id_unread,
+            id_done_newer,
+            id_active,
+            id_done_subsec,
+        ]
+        .into_iter()
+        .map(|id| library::Entry {
+            id: id.into(),
+            path: PathBuf::from(id),
+        })
+        .collect(),
+        warnings: Vec::new(),
+    };
+    scan.sort(&store.db);
+    let ids: Vec<_> = scan.entries.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            id_active,
+            id_unread,
+            id_done_subsec,
+            id_done_newer,
+            id_done_older,
+        ]
+    );
+
+    assert_eq!(
+        library::completion_month(store.db.books[id_done_newer].completed_at().unwrap()),
+        Some("Ноябрь 2026".into())
+    );
+    assert_eq!(
+        library::completion_month(store.db.books[id_done_older].completed_at().unwrap()),
+        Some("Сентябрь 2026".into())
+    );
+
+    // Unmarking completion preserves history and returns the book to the active top with its 25%.
+    store.db.books.get_mut(id_done_older).unwrap().rereading = true;
+    store.save().unwrap();
+    let reopened = Store::open(&p).unwrap();
+    let r = &reopened.db.books[id_done_older];
+    assert!(r.rereading);
+    assert_eq!(r.completed_at(), None);
+    assert_eq!(r.completions, vec!["2026-09-15T12:00:00Z"]);
+    assert_eq!(r.progress, 25);
+
+    scan.sort(&reopened.db);
+    assert_eq!(scan.entries[0].id, id_done_older);
+
+    // Finishing again clears rereading, appends a new date, and omits `rereading = false` in TOML.
+    let mut store = reopened;
+    let end = Reading {
+        page: 9,
+        total: 10,
+        pages: 1,
+    };
+    assert!(end.finish(true, store.db.books.get_mut(id_done_older).unwrap()));
+    store.save().unwrap();
+    let raw = fs::read_to_string(&p).unwrap();
+    assert!(!raw.contains("rereading"));
+    let final_store = Store::open(&p).unwrap();
+    let r = &final_store.db.books[id_done_older];
+    assert!(!r.rereading);
+    assert_eq!(r.completions.len(), 2);
+    assert!(r.completed_at().is_some());
+}

@@ -480,12 +480,16 @@ fn decode(b: &[u8], expired: bool) -> Option<(usize, Key)> {
 unsafe extern "C" {
     fn wcwidth(c: libc::wchar_t) -> i32;
 }
+pub fn cell_width(c: char) -> u32 {
+    let c = if c.is_control() { ' ' } else { c };
+    unsafe { wcwidth(c as libc::wchar_t) }.max(0) as u32
+}
 pub fn clip(text: &str, cols: u32) -> String {
     let mut width = 0;
     let mut line = String::new();
     for c in text.chars() {
         let c = if c.is_control() { ' ' } else { c };
-        let n = unsafe { wcwidth(c as libc::wchar_t) }.max(0) as u32;
+        let n = cell_width(c);
         if width + n > cols {
             break;
         }

@@ -229,6 +229,7 @@ impl App {
                     item_action: Some((&completed, "E Не прочитано")),
                     empty: "Книг пока нет. D — выбрать папку, R — обновить.",
                     footer: "  S Настройки   Y Темы   D Папка   R Обновить   W Ошибки   Q Выход",
+                    ..Default::default()
                 },
                 &mut selected,
             )?;

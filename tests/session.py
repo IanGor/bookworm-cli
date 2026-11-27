@@ -201,10 +201,12 @@ with tempfile.TemporaryDirectory() as tmp:
         s.send('\x1b[C')
         s.until('Enter Начало')
         s.send('\r')
-        s.until('Enter Описать')
+        s.until('Enter Выбрать')
         s.send('\x1b[5~')
-        s.until('Enter Описать')
+        s.until('Enter Выбрать')
         s.send('\r')
+        s.until('C Цитата / комментарий')
+        s.send('d')
         s.until('Enter Сохранить')
         s.send('Слишком широкие пробелы\r')
         s.until('Промпт сохранён')
@@ -226,6 +228,75 @@ with tempfile.TemporaryDirectory() as tmp:
         assert report.stat().st_mode & 0o777 == 0o600
         assert record(root)[1]['anchor'] == before_theme
         s.send('\r')
+        s.until(FOOT)
+
+        quotes_dir = root / 'data/bookworm/quotes'
+        s.send('c')
+        assert 'Цитат пока нет'.encode() in s.until('Esc Назад')
+        assert not quotes_dir.exists()
+        s.send('\x1b')
+        s.until(FOOT)
+
+        s.send('d')
+        s.until('Enter Начало')
+        s.send('\r')
+        s.until('Enter Выбрать')
+        for _ in range(5):
+            s.send('\x1b[C')
+            s.until('Enter Выбрать')
+        s.send('\r')
+        s.until('C Цитата / комментарий')
+        s.send('c')
+        s.until('Новая цитата')
+        s.until('Enter Сохранить')
+        s.send('\r')
+        assert 'Цитата сохранена'.encode() in s.until(FOOT)
+        assert record(root)[1]['anchor'] == before_theme
+        book_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        quote_file = quotes_dir / f'{book_sha}.toml'
+        assert quotes_dir.stat().st_mode & 0o777 == 0o700
+        assert quote_file.stat().st_mode & 0o777 == 0o600
+        qdata = tomllib.loads(quote_file.read_text())
+        assert len(qdata['quotes']) == 1 and 'comment' not in qdata['quotes'][0]
+
+        s.send('d')
+        s.until('Enter Начало')
+        s.send('\x1b[6~')
+        s.until('Enter Начало')
+        s.send('\r')
+        s.until('Enter Выбрать')
+        for _ in range(2):
+            s.send('\x1b[6~')
+            s.until('Enter Выбрать')
+        s.send('\r')
+        s.until('C Цитата / комментарий')
+        s.send('c')
+        s.until('Enter Сохранить')
+        s.send('Мысль по тексту\r')
+        s.until(FOOT)
+        qdata = tomllib.loads(quote_file.read_text())
+        assert len(qdata['quotes']) == 2
+        long_quote = qdata['quotes'][1]
+        assert len(long_quote['text']) > 700 and '[…]' not in long_quote['text']
+        assert long_quote['comment'] == 'Мысль по тексту'
+        assert record(root)[1]['anchor'] == before_theme
+
+        s.send('c')
+        qview = s.until('Esc Назад')
+        assert 'Цитата 1 из 2'.encode() in qview
+        s.send('x')
+        s.until('Удалить цитату?')
+        s.until('Esc Отмена')
+        s.send('y')
+        after_del = s.until('Esc Назад')
+        assert 'Цитата 1 из 1'.encode() in after_del
+        s.send('e')
+        s.until('Комментарий к цитате')
+        s.until('Enter Сохранить')
+        s.send(' дополнено\r')
+        after_edit = s.until('Esc Назад')
+        assert 'Мысль по тексту дополнено'.encode() in after_edit
+        s.send('\x1b')
         s.until(FOOT)
         assert '│'.encode() not in screen and 'Оглавление'.encode() in screen
         pages = images(screen)
@@ -373,7 +444,18 @@ with tempfile.TemporaryDirectory() as tmp:
         assert example_rec['rereading'] is True and len(example_rec['completions']) == 2
         assert divider not in unmarked
         assert f'› o~ {mid_progress:>3}%   Проверка экрана'.encode() in unmarked
+        assert 'C Цитаты'.encode() in unmarked
         assert unmarked.index('Проверка экрана'.encode()) < unmarked.index('Солярис'.encode())
+        s.send('c')
+        lib_quotes = s.until('Esc Назад')
+        assert 'Мысль по тексту дополнено'.encode() in lib_quotes and b'a=T' not in lib_quotes
+        s.send('\r')
+        s.until(FOOT)
+        assert record(root)[0]['books'][example_id]['anchor'] == long_quote['start']
+        s.send('\x1b[C')
+        s.until(FOOT)
+        s.send('b')
+        s.until('Q Выход')
         s.send('Y')
         s.until(THEME_FOOT)
         s.send('\x1b[F')

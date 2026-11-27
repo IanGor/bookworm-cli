@@ -77,15 +77,14 @@ pub struct QuoteStore {
 impl QuoteStore {
     pub fn open(path: &Path) -> Result<Self> {
         let original = snapshot(path).with_context(|| format!("Чтение {}", path.display()))?;
-        let mut file: QuoteFile = match &original {
-            Some(s) => toml::from_str(
-                std::str::from_utf8(&s.bytes).with_context(|| {
+        let mut file: QuoteFile =
+            match &original {
+                Some(s) => toml::from_str(std::str::from_utf8(&s.bytes).with_context(|| {
                     format!("Файл цитат {} должен быть в UTF-8", path.display())
-                })?,
-            )
-            .with_context(|| format!("Некорректный файл цитат {}", path.display()))?,
-            None => QuoteFile::default(),
-        };
+                })?)
+                .with_context(|| format!("Некорректный файл цитат {}", path.display()))?,
+                None => QuoteFile::default(),
+            };
         file.validate()
             .with_context(|| format!("Некорректный файл цитат {}", path.display()))?;
         sort_quotes(&mut file.quotes);

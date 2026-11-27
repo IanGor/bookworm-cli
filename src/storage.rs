@@ -237,7 +237,10 @@ pub(crate) fn publish(
 ) -> Result<()> {
     let parent = path.parent().context("Путь базы без каталога")?;
     if let Some(mode) = dir_mode {
-        DirBuilder::new().recursive(true).mode(mode).create(parent)?;
+        DirBuilder::new()
+            .recursive(true)
+            .mode(mode)
+            .create(parent)?;
     } else {
         fs::create_dir_all(parent)?;
     }

@@ -367,9 +367,8 @@ fn quote_store_sorts_by_book_order_detects_conflicts_and_validates_schema() {
     use bookworm::quotes::{Quote, QuoteStore};
     use std::os::unix::fs::PermissionsExt;
     let d = Temp::new();
-    let path = d
-        .0
-        .join("quotes/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.toml");
+    let path =
+        d.0.join("quotes/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.toml");
 
     let mut store = QuoteStore::open(&path).unwrap();
     assert!(store.quotes.is_empty());
@@ -405,7 +404,10 @@ fn quote_store_sorts_by_book_order_detects_conflicts_and_validates_schema() {
     });
     store.save().unwrap();
 
-    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     assert_eq!(
         fs::metadata(path.parent().unwrap())
             .unwrap()

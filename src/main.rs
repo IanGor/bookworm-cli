@@ -7,6 +7,7 @@ use anyhow::{Context, Result, ensure};
 use bookworm::{
     fonts,
     library::{self, Scan},
+    quotes::{self, Quote, QuoteStore},
     reader::{Frame, PAGE_ROW, Reader, SIDEBAR_COLS},
     storage::{self, Anchor, Store},
     theme::{self, THEMES},
@@ -14,7 +15,7 @@ use bookworm::{
 use bookworm_core::{book::Book, font::Family, render};
 use std::{env, fmt, fs, path::Path, process::ExitCode};
 use terminal::{Key, Terminal};
-use ui::{List, MUTED, NORMAL, TITLE};
+use ui::{List, MUTED, NORMAL, QuoteAction, TITLE};
 
 const HELP: &str = "Bookworm — локальная читалка FB2 и EPUB
 
@@ -22,8 +23,8 @@ const HELP: &str = "Bookworm — локальная читалка FB2 и EPUB
   bookworm ПУТЬ         читать файл FB2, FB2.ZIP или EPUB
   bookworm --licenses   лицензии встроенных шрифтов
 
-В книге: ← → страницы, T оглавление, N сноски, F шрифт, S настройки,
-+ и - кегль, V разворот, Y темы, D дефект вёрстки, B библиотека, ? помощь, Q выход.
+В книге: ← → страницы, T оглавление, N сноски, C цитаты, F шрифт, S настройки,
++ и - кегль, V разворот, Y темы, D выделить фрагмент, B библиотека, ? помощь, Q выход.
 На последней странице E открывает подтверждение завершения.";
 #[derive(Debug)]
 struct Quit;
@@ -80,7 +81,7 @@ fn run() -> Result<()> {
         }
     }
     if let Some(p) = arg {
-        app.read(Path::new(&p), true)?;
+        app.read(Path::new(&p), true, None)?;
     }
     app.library()
 }
@@ -226,10 +227,10 @@ impl App {
                     subtitle: &subtitle,
                     items: &rows,
                     sections: &sections,
+                    base_action: "C Цитаты",
                     item_action: Some((&completed, "E Не прочитано")),
                     empty: "Книг пока нет. D — выбрать папку, R — обновить.",
                     footer: "  S Настройки   Y Темы   D Папка   R Обновить   W Ошибки   Q Выход",
-                    ..Default::default()
                 },
                 &mut selected,
             )?;
@@ -269,36 +270,32 @@ impl App {
                         return Err(Quit.into());
                     }
                 }
+                Key::Char('c') => {
+                    if let Some(entry) = scan.entries.get(selected) {
+                        let id = entry.id.clone();
+                        let path = entry.path.clone();
+                        let r = &self.store.db.books[&id];
+                        let (title, author) = (r.title().to_owned(), r.author().to_owned());
+                        if let Some(target) = self.quotes_menu(&id, &title, &author)? {
+                            self.read(&path, false, Some(target))?;
+                        }
+                    }
+                }
                 Key::Char('e') => {
                     if let Some(entry) = scan.entries.get(selected)
                         && self.store.db.books[&entry.id].completed_at().is_some()
                     {
                         let id = entry.id.clone();
-                        loop {
-                            self.term.begin_frame()?;
-                            ui::title(&mut self.term, "Снять пометку о прочтении?")?;
-                            self.term.line(
-                                3,
-                                "  Книга вернётся в общий список с текущим процентом чтения.",
-                                NORMAL,
-                            )?;
-                            self.term
-                                .line(5, "  Y / Д Подтвердить   Esc Отмена", TITLE)?;
-                            self.term.end_frame()?;
-                            match self.term.key()?.command() {
-                                Key::Resize => continue,
-                                Key::Exit => return Err(Quit.into()),
-                                Key::Char('y' | 'д' | 'Д') => {
-                                    self.store.db.books.get_mut(&id).unwrap().rereading = true;
-                                    self.store.save()?;
-                                    scan.sort(&self.store.db);
-                                    if let Some(pos) = scan.entries.iter().position(|e| e.id == id)
-                                    {
-                                        selected = pos;
-                                    }
-                                    break;
-                                }
-                                _ => break,
+                        if ui::confirm(
+                            &mut self.term,
+                            "Снять пометку о прочтении?",
+                            "Книга вернётся в общий список с текущим процентом чтения.",
+                        )? {
+                            self.store.db.books.get_mut(&id).unwrap().rereading = true;
+                            self.store.save()?;
+                            scan.sort(&self.store.db);
+                            if let Some(pos) = scan.entries.iter().position(|e| e.id == id) {
+                                selected = pos;
                             }
                         }
                     }
@@ -306,7 +303,7 @@ impl App {
                 Key::Enter => {
                     if let Some(entry) = scan.entries.get(selected) {
                         let path = entry.path.clone();
-                        self.read(&path, false)?;
+                        self.read(&path, false, None)?;
                     }
                 }
                 _ => (),
@@ -357,7 +354,7 @@ impl App {
         record.last_read = Some(storage::now());
         self.store.save()
     }
-    fn read(&mut self, path: &Path, direct: bool) -> Result<()> {
+    fn read(&mut self, path: &Path, direct: bool, jump: Option<Anchor>) -> Result<()> {
         self.busy("Открываю книгу…")?;
         let bytes = match fs::read(path) {
             Ok(b) => b,
@@ -370,12 +367,8 @@ impl App {
             }
         };
         let id = storage::content_id(&bytes);
-        let anchor = self
-            .store
-            .db
-            .books
-            .get(&id)
-            .map(|r| r.anchor)
+        let anchor = jump
+            .or_else(|| self.store.db.books.get(&id).map(|r| r.anchor))
             .unwrap_or_default();
         let Some(frame) = self.frame()? else {
             return Ok(());
@@ -390,6 +383,9 @@ impl App {
                 return Ok(());
             }
         };
+        if let Some(target) = jump {
+            r.jump_to(target);
+        }
         library::metadata(&mut self.store.db, &id, path, &r.book.doc);
         self.save_position(&id, &r)?;
         let mut status = if fallback {
@@ -457,6 +453,14 @@ impl App {
                         }
                     }
                     Key::Char('n') => self.notes(&r)?,
+                    Key::Char('c') => {
+                        let rec = &self.store.db.books[&id];
+                        let (title, author) = (rec.title().to_owned(), rec.author().to_owned());
+                        if let Some(target) = self.quotes_menu(&id, &title, &author)? {
+                            r.jump_to(target);
+                            self.save_position(&id, &r)?;
+                        }
+                    }
                     Key::Char('e') if r.state().at_end() => {
                         let again = !self.store.db.books[&id].completions.is_empty();
                         let heading = if again {
@@ -469,20 +473,11 @@ impl App {
                         } else {
                             "Записать дату и время завершения чтения?"
                         };
-                        ui::title(&mut self.term, heading)?;
-                        self.term.line(3, info, NORMAL)?;
-                        self.term
-                            .line(5, "  Y / Д Подтвердить   Esc Отмена", TITLE)?;
-                        self.term.flush()?;
-                        match self.term.key()?.command() {
-                            Key::Exit => return Err(Quit.into()),
-                            Key::Char('y' | 'д' | 'Д') => {
-                                r.state()
-                                    .finish(true, self.store.db.books.get_mut(&id).unwrap());
-                                self.save_position(&id, &r)?;
-                                status = "Завершение записано".into();
-                            }
-                            _ => (),
+                        if ui::confirm(&mut self.term, heading, info)? {
+                            r.state()
+                                .finish(true, self.store.db.books.get_mut(&id).unwrap());
+                            self.save_position(&id, &r)?;
+                            status = "Завершение записано".into();
                         }
                     }
                     Key::Char('v') => {
@@ -503,7 +498,11 @@ impl App {
                         status = format!("  Кегль {} px", self.store.db.size);
                     }
                     Key::Char('f') => reflow = self.font_menu()?,
-                    Key::Char('d') => self.report_layout(path, &id, &r, fallback)?,
+                    Key::Char('d') => {
+                        if let Some(msg) = self.select_fragment(path, &id, &r, fallback)? {
+                            status = msg;
+                        }
+                    }
                     Key::Char('s') => reflow = self.settings()?,
                     Key::Char('y') => self.themes()?,
                     Key::Char('?') => self.help()?,
@@ -523,22 +522,81 @@ impl App {
             }
         }
     }
-    fn report_layout(&mut self, path: &Path, id: &str, r: &Reader, fallback: bool) -> Result<()> {
+    fn quotes_menu(&mut self, id: &str, title: &str, author: &str) -> Result<Option<Anchor>> {
+        let path = quotes::quotes_path(id)?;
+        let mut store = match QuoteStore::open(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.message("Ошибка чтения цитат", &e.to_string())?;
+                return Ok(None);
+            }
+        };
+        let mut selected = 0;
+        let mut scroll = 0;
+        loop {
+            match ui::quotes_view(
+                &mut self.term,
+                title,
+                author,
+                &store.quotes,
+                &mut selected,
+                &mut scroll,
+            )? {
+                QuoteAction::Back => return Ok(None),
+                QuoteAction::Jump(i) => return Ok(Some(store.quotes[i].start)),
+                QuoteAction::Edit(i) => {
+                    let current = store.quotes[i].comment.clone();
+                    let text = store.quotes[i].text.clone();
+                    if let Some(updated) = ui::quote_comment(
+                        &mut self.term,
+                        "Комментарий к цитате",
+                        &text,
+                        current.as_deref(),
+                    )? {
+                        store.quotes[i].comment = updated;
+                        if let Err(e) = store.save() {
+                            self.message("Не удалось сохранить цитату", &e.to_string())?;
+                        }
+                    }
+                }
+                QuoteAction::Delete(i) => {
+                    if ui::confirm(
+                        &mut self.term,
+                        "Удалить цитату?",
+                        "Цитата и комментарий к ней будут удалены.",
+                    )? {
+                        store.quotes.remove(i);
+                        if let Err(e) = store.save() {
+                            self.message("Не удалось сохранить цитаты", &e.to_string())?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn select_fragment(
+        &mut self,
+        path: &Path,
+        id: &str,
+        r: &Reader,
+        fallback: bool,
+    ) -> Result<Option<String>> {
         let Some(mut selection) = selection::Selection::new(r) else {
-            return self.message(
-                "Дефект вёрстки",
+            self.message(
+                "Выделение текста",
                 "На видимых страницах нет текстовых блоков.",
-            );
+            )?;
+            return Ok(None);
         };
         let mut empty = false;
-        let range = loop {
+        let (preview, range) = loop {
             let status = match (selection.anchor.is_some(), empty) {
-                (_, true) => "Сдвинь курсор до конца фрагмента · Enter Описать · Esc Отмена",
+                (_, true) => "Сдвинь курсор до конца фрагмента · Enter Выбрать · Esc Отмена",
                 (false, false) => {
                     "Enter Начало · ←→ Текст · ↑↓ Строка · PgUp/PgDn Страница · Esc Отмена"
                 }
                 (true, false) => {
-                    "Enter Описать · ←→ Текст · ↑↓ Строка · PgUp/PgDn Страница · Esc Отмена"
+                    "Enter Выбрать · ←→ Текст · ↑↓ Строка · PgUp/PgDn Страница · Esc Отмена"
                 }
             };
             let preview = selection.preview();
@@ -546,10 +604,10 @@ impl App {
             match self.term.key()?.command() {
                 Key::Enter if selection.anchor.is_none() => selection.anchor = Some(preview.cursor),
                 Key::Enter => match preview.range {
-                    Some(range) => break range,
+                    Some(range) => break (preview, range),
                     None => empty = true,
                 },
-                Key::Esc | Key::Resize => return Ok(()),
+                Key::Esc | Key::Resize => return Ok(None),
                 Key::Exit => return Err(Quit.into()),
                 key => {
                     empty = false;
@@ -557,8 +615,57 @@ impl App {
                 }
             }
         };
+        let prompt = "C Цитата / комментарий   ·   D Дефект движка   ·   Esc Отмена";
+        let report_mode = loop {
+            self.draw_reader(id, r, prompt, None, Some(preview), false)?;
+            match self.term.key()?.command() {
+                Key::Char('c') => break false,
+                Key::Char('d') => break true,
+                Key::Esc | Key::Resize => return Ok(None),
+                Key::Exit => return Err(Quit.into()),
+                _ => (),
+            }
+        };
+        if !report_mode {
+            let start = Anchor {
+                block: range.start.block as u32,
+                offset: range.start.offset,
+            };
+            let end = Anchor {
+                block: range.end.block as u32,
+                offset: range.end.offset,
+            };
+            let (chapter, text) = quotes::extract_quote(&r.book.doc, start, end);
+            if text.trim().is_empty() {
+                self.message("Новая цитата", "В выбранном диапазоне нет текста.")?;
+                return Ok(None);
+            }
+            let Some(comment) = ui::quote_comment(&mut self.term, "Новая цитата", &text, None)?
+            else {
+                return Ok(None);
+            };
+            let saved = (|| -> Result<()> {
+                let mut store = QuoteStore::open(&quotes::quotes_path(id)?)?;
+                store.add(Quote {
+                    start,
+                    end,
+                    chapter,
+                    text,
+                    comment,
+                    created_at: storage::now(),
+                });
+                store.save()
+            })();
+            return match saved {
+                Ok(()) => Ok(Some("Цитата сохранена".into())),
+                Err(e) => {
+                    self.message("Не удалось сохранить цитату", &e.to_string())?;
+                    Ok(None)
+                }
+            };
+        }
         let Some(description) = ui::report_description(&mut self.term, range)? else {
-            return Ok(());
+            return Ok(None);
         };
         let font = if fallback {
             "PT Serif"
@@ -566,9 +673,10 @@ impl App {
             &self.store.db.font
         };
         match report::save(path, id, r, range, font, &description) {
-            Ok(file) => ui::report_saved(&mut self.term, &file),
-            Err(e) => self.message("Не удалось сохранить промпт", &e.to_string()),
+            Ok(file) => ui::report_saved(&mut self.term, &file)?,
+            Err(e) => self.message("Не удалось сохранить промпт", &e.to_string())?,
         }
+        Ok(None)
     }
     fn draw_reader(
         &mut self,
@@ -1025,11 +1133,12 @@ impl App {
             "Пробел   Следующая страница",
             "T   Оглавление и переход к разделу",
             "N   Сноски открытых страниц",
+            "C   Цитаты и комментарии к книге",
             "F   Выбор гарнитуры и папки с TTF / OTF",
             "S   Настройки чтения и оформления",
             "G   Включить / выключить бионическое чтение",
             "Y   Настройки цветовой темы",
-            "D   Выделить фрагмент и описать дефект вёрстки",
+            "D   Выделить фрагмент: цитата или дефект вёрстки",
             "+ / -   Увеличить / уменьшить кегль",
             "V   Одна страница / автоматический разворот",
             "E   Подтвердить завершение в конце книги",

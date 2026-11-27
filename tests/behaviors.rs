@@ -364,8 +364,22 @@ fn completed_books_move_to_bottom_by_latest_completion_and_rereading_restores_ac
 
 #[test]
 fn quote_store_sorts_by_book_order_detects_conflicts_and_validates_schema() {
-    use bookworm::quotes::{Quote, QuoteStore};
+    use bookworm::quotes::{Quote, QuoteStore, quotes_path};
     use std::os::unix::fs::PermissionsExt;
+    for bad_id in [
+        "",
+        "../etc/passwd",
+        "0123456789abcdef",
+        "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
+    ] {
+        assert!(quotes_path(bad_id).is_err(), "{bad_id}");
+    }
+    let ok_path =
+        quotes_path("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+    assert!(ok_path.ends_with(
+        "bookworm/quotes/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.toml"
+    ));
+
     let d = Temp::new();
     let path =
         d.0.join("quotes/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.toml");
@@ -374,6 +388,20 @@ fn quote_store_sorts_by_book_order_detects_conflicts_and_validates_schema() {
     assert!(store.quotes.is_empty());
     assert!(!path.exists());
 
+    store.add(Quote {
+        start: Anchor {
+            block: 5,
+            offset: 2,
+        },
+        end: Anchor {
+            block: 5,
+            offset: 10,
+        },
+        chapter: "Глава 2".into(),
+        text: "Поздний фрагмент (полсекунды спустя)".into(),
+        comment: Some("Вторая".into()),
+        created_at: "2026-11-27T01:00:00.500000000Z".into(),
+    });
     store.add(Quote {
         start: Anchor {
             block: 5,
@@ -422,10 +450,14 @@ fn quote_store_sorts_by_book_order_detects_conflicts_and_validates_schema() {
     assert!(!raw.contains("chapter = \"\""));
 
     let mut reopened = QuoteStore::open(&path).unwrap();
-    assert_eq!(reopened.quotes.len(), 2);
+    assert_eq!(reopened.quotes.len(), 3);
     assert_eq!(reopened.quotes[0].text, "Ранний фрагмент");
     assert_eq!(reopened.quotes[0].comment, None);
     assert_eq!(reopened.quotes[1].text, "Поздний фрагмент");
+    assert_eq!(
+        reopened.quotes[2].text,
+        "Поздний фрагмент (полсекунды спустя)"
+    );
 
     // External modification must block saving without clobbering disk bytes.
     let mut stale = QuoteStore::open(&path).unwrap();
@@ -436,9 +468,9 @@ fn quote_store_sorts_by_book_order_detects_conflicts_and_validates_schema() {
     assert!(stale.save().is_err());
     assert_eq!(fs::read(&path).unwrap(), expected_on_disk);
 
-    // Deleting the last quote leaves an empty store on reopen.
+    // Deleting remaining quotes leaves an empty store on reopen.
     let mut single = QuoteStore::open(&path).unwrap();
-    assert_eq!(single.quotes.len(), 1);
+    assert_eq!(single.quotes.len(), 2);
     single.quotes.clear();
     single.save().unwrap();
     assert!(QuoteStore::open(&path).unwrap().quotes.is_empty());

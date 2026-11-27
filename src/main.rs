@@ -527,7 +527,7 @@ impl App {
         let mut store = match QuoteStore::open(&path) {
             Ok(s) => s,
             Err(e) => {
-                self.message("Ошибка чтения цитат", &e.to_string())?;
+                self.message("Ошибка чтения цитат", &format!("{e:#}"))?;
                 return Ok(None);
             }
         };
@@ -555,7 +555,8 @@ impl App {
                     )? {
                         store.quotes[i].comment = updated;
                         if let Err(e) = store.save() {
-                            self.message("Не удалось сохранить цитату", &e.to_string())?;
+                            store.quotes[i].comment = current;
+                            self.message("Не удалось сохранить цитату", &format!("{e:#}"))?;
                         }
                     }
                 }
@@ -565,9 +566,10 @@ impl App {
                         "Удалить цитату?",
                         "Цитата и комментарий к ней будут удалены.",
                     )? {
-                        store.quotes.remove(i);
+                        let removed = store.quotes.remove(i);
                         if let Err(e) = store.save() {
-                            self.message("Не удалось сохранить цитаты", &e.to_string())?;
+                            store.quotes.insert(i, removed);
+                            self.message("Не удалось сохранить цитаты", &format!("{e:#}"))?;
                         }
                     }
                 }
@@ -659,7 +661,7 @@ impl App {
             return match saved {
                 Ok(()) => Ok(Some("Цитата сохранена".into())),
                 Err(e) => {
-                    self.message("Не удалось сохранить цитату", &e.to_string())?;
+                    self.message("Не удалось сохранить цитату", &format!("{e:#}"))?;
                     Ok(None)
                 }
             };

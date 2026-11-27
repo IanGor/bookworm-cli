@@ -52,7 +52,14 @@ impl QuoteFile {
 }
 
 fn sort_quotes(quotes: &mut [Quote]) {
-    quotes.sort_by(|a, b| (a.start, a.end, &a.created_at).cmp(&(b.start, b.end, &b.created_at)));
+    quotes.sort_by(|a, b| {
+        (a.start, a.end, parse_utc(&a.created_at), &a.created_at).cmp(&(
+            b.start,
+            b.end,
+            parse_utc(&b.created_at),
+            &b.created_at,
+        ))
+    });
 }
 
 pub fn quotes_path(book_id: &str) -> Result<PathBuf> {
